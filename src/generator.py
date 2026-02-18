@@ -1,81 +1,82 @@
+from __future__ import annotations
 import random
-import math
+from typing import List, Tuple, Dict, Any, Optional
 from .task import Task
 
-def uunifast (n, u_total):
+def uunifast(n: int, u_total: float, rng: random.Random) -> List[float]:
+    """UUniFast for generating n utilizations that sum to u_total."""
+    if n <= 0:
+        return []
     sum_u = u_total
-    utilizations = []
-
+    utils = []
     for i in range(1, n):
-        next_sum_u = sum_u * (random.random() ** (1.0 / (n - i)))
-        utilizations.append(sum_u - next_sum_u)
+        next_sum_u = sum_u * (rng.random() ** (1.0 / (n - i)))
+        utils.append(sum_u - next_sum_u)
         sum_u = next_sum_u
+    utils.append(sum_u)
+    return utils
 
-    utilizations.append(sum_u)
-    return utilizations
+def generate_taskset(
+    n_tasks: int,
+    n_cores: int,
+    target_u_norm: float,
+    p_hi_prob: float,
+    r_hi_factor: float,
+    min_period: int = 1,
+    max_period: int = 100,
+    n_flags: int = 4,
+    seed: Optional[int] = None,
+    util_tolerance: float = 0.0,   # if >0, actual u_norm sampled in [u- tol, u+ tol]
+) -> Tuple[List[Task], Dict[str, Any]]:
+    """
+    Generate a mixed-criticality task set consistent with the paper's evaluation section:
+      - Total utilization U_total = target_u_norm * m
+      - PHI = probability of HI task
+      - RHI (here r_hi_factor) in [1..5] acts as multiplier: C_HI = C_LO * RHI for HI tasks
+      - LO tasks have C_HI = 0 (dropped in HI mode)
+      - Flag identifies interference domain; same flag => interfering tasks.
+    """
+    rng = random.Random(seed)
 
-def generate_taskset (
-        n_tasks,            # Number of tasks (n)
-        n_cores,            # Number of cores (m)
-        target_u_norm,      # Normilized utilization 
-        p_hi_prob,          # Probability of a task being high criticality  
-        r_hi_factor,        # Factor to calculate C_HI (C_HI = C_LOW * R_HI)
-        min_period=10,      
-        max_period=1000,     
-        n_flags=4           # number of memory banks/interference domains (*/assiges randomly\*-_-)
-):
-    # Calculate Total Utilization for UUnifast
-    u_sum_absolute = target_u_norm * n_cores
+    u_norm = target_u_norm
+    if util_tolerance and util_tolerance > 0:
+        lo = max(0.0, target_u_norm - util_tolerance)
+        hi = min(1.0, target_u_norm + util_tolerance)
+        u_norm = rng.uniform(lo, hi)
 
-    # generate utilizatios for LOW mode
-    utilizations = uunifast(n_tasks, u_sum_absolute)
-    tasks = []
+    u_total = u_norm * n_cores
+    utils = uunifast(n_tasks, u_total, rng)
 
-    for i, u_low in enumerate (utilizations):
-        task_id = i + 1
+    tasks: List[Task] = []
+    for i, u_lo in enumerate(utils, start=1):
+        crit = "HI" if rng.random() < p_hi_prob else "LO"
 
-        # Determin the Criticality
-        if random.random() < p_hi_prob:
-            criticality = 'HIGH'
-            # Caus R_HI varies or is a max parameter (based on the paper)
-            # we use it as the multiplier
-            current_r_hi = r_hi_factor
-        else:
-            criticality = 'LOW'
-            current_r_hi = 1.0
+        period = rng.randint(min_period, max_period)
 
-        # generating period: based on the paper we use "Uniform Distribution" for perios
-        period = random.randint(min_period, max_period)
+        c_lo = u_lo * period
+        c_hi = 0.0
+        if crit == "HI":
+            c_hi = c_lo * r_hi_factor
 
-        # U_LOW = C_LOW / T => C_LOW + U_LOW * T
-        c_low = u_low * period
-        c_high = c_low * current_r_hi
+            # Cap at period to keep utilization <= 1 (simple safeguard)
+            if c_hi > period:
+                c_hi = float(period)
+                c_lo = c_hi / r_hi_factor
 
-        # Making sure C_LOW and C_HIGH dont exceed period
-        if c_high > period:
-            c_high = period
-            c_low  = c_high / current_r_hi
+        # For LO tasks: c_hi stays 0.0
+        flag = rng.randint(1, n_flags)
 
-        # assigning random flags
-        flag = random.randint(1, n_flags)
+        tasks.append(Task(task_id=i, criticality=crit, c_lo=float(c_lo), c_hi=float(c_hi), period=int(period), flag=int(flag)))
 
-        new_task = Task (
-            task_id=task_id, 
-            criticality=criticality,
-            c_low=c_low, 
-            c_high=c_high,
-            period=period,
-            flag=flag
-        )
-        tasks.append(new_task)
-
-    # returning metadata for runner to save it
-    metadata = {
+    meta = {
         "m_cores": n_cores,
         "n_tasks": n_tasks,
         "target_u_norm": target_u_norm,
-        "u_sum_absolute": u_sum_absolute,
-        "p_high": p_hi_prob
+        "actual_u_norm": u_norm,
+        "u_total": u_total,
+        "p_hi": p_hi_prob,
+        "r_hi": r_hi_factor,
+        "n_flags": n_flags,
+        "seed": seed,
     }
-    
-    return tasks, metadata
+    return tasks, meta
