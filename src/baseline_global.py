@@ -11,8 +11,6 @@ def calculate_rta(task, all_tasks, m, Tac, mode="LO"):
         R_old = R_new
         interference_sum = 0
         
-        # پیدا کردن تسک‌های با اولویت بالاتر (ددلاین کوچک‌تر یعنی اولویت بالاتر)
-        # ما تسک‌هایی را بررسی می‌کنیم که ددلاینشان از تسک فعلی کمتر است
         hp_tasks = [t for t in all_tasks if t.deadline < task.deadline]
         
         for pj in hp_tasks:
