@@ -1,59 +1,42 @@
-# src/baseline_global.py
-from __future__ import annotations
-from dataclasses import dataclass
-from typing import List, Dict, Tuple
-from .task import Task
+import math
 
-@dataclass
-class Job:
-    task: Task
-    deadline: int
-    remaining: float
-
-def _priority_key(task: Task) -> Tuple[int, float]:
-    # Priority based on DCDU (Decreasing Criticality, then Utilization)
-    crit_rank = 0 if task.criticality == "HI" else 1
-    util = task.u_hi if task.criticality == "HI" else task.u_lo
-    return (crit_rank, -util)
-
-def simulate_global_fp(tasks: List[Task], m: int, horizon: int, mode: str = "LO", Tac: float = 0.6) -> bool:
-    # In HI-mode, ONLY HI-criticality tasks are executed (Article Section III)
-    if mode == "HI":
-        active_tasks = [t for t in tasks if t.criticality == "HI"]
-    else:
-        active_tasks = tasks
+def calculate_rta(task, all_tasks, m, Tac, mode="LO"):
+    Ci = task.c_lo if mode == "LO" else task.c_hi
+    interference_penalty = (m - 1) * Tac
     
-    if not active_tasks: return True
-
-    exec_times = {t.task_id: (t.c_lo if mode == "LO" else t.c_hi) for t in active_tasks}
-    active_jobs: List[Job] = []
+    R_new = Ci + interference_penalty
+    R_old = 0
     
-    for t in range(horizon):
-        for task in active_tasks:
-            if t % task.period == 0:
-                if any(j.task.task_id == task.task_id for j in active_jobs):
-                    return False 
-                active_jobs.append(Job(task, t + task.deadline, float(exec_times[task.task_id])))
-
-        for j in active_jobs:
-            if t >= j.deadline and j.remaining > 0:
-                return False
-
-        active_jobs.sort(key=lambda j: (_priority_key(j.task), j.deadline))
-        running_jobs = active_jobs[:m]
+    while R_new != R_old:
+        R_old = R_new
+        interference_sum = 0
         
-        # Memory interference penalty (Algorithm 8 logic)
-        num_running = len(running_jobs)
-        progress = 1.0 / (1.0 + (num_running - 1) * Tac) if num_running > 1 else 1.0
+        # پیدا کردن تسک‌های با اولویت بالاتر (ددلاین کوچک‌تر یعنی اولویت بالاتر)
+        # ما تسک‌هایی را بررسی می‌کنیم که ددلاینشان از تسک فعلی کمتر است
+        hp_tasks = [t for t in all_tasks if t.deadline < task.deadline]
+        
+        for pj in hp_tasks:
+            Cj = pj.c_lo if mode == "LO" else pj.c_hi
+            interference_sum += math.ceil(R_old / pj.period) * Cj
+            
+        R_new = Ci + interference_penalty + (1/m) * interference_sum
+        
+        if R_new > task.deadline:
+            return float('inf')
+            
+    return R_new
 
-        for j in running_jobs:
-            j.remaining -= progress
+def global_schedulable(tasks, m, Tac=0.6):
+    if not tasks:
+        return True
 
-        active_jobs = [j for j in active_jobs if j.remaining > 0.001]
+    for t in tasks:
+        if calculate_rta(t, tasks, m, Tac, mode="LO") > t.deadline:
+            return False
+            
+    hi_tasks = [t for t in tasks if t.criticality == 'HI']
+    for t in hi_tasks:
+        if calculate_rta(t, hi_tasks, m, Tac, mode="HI") > t.deadline:
+            return False
+            
     return True
-
-def global_schedulable(tasks: List[Task], m: int, Tac: float = 0.6) -> bool:
-    max_p = max(t.period for t in tasks) if tasks else 0
-    horizon = max(1, 5 * max_p) # Reduced horizon for faster exact calculation
-    return simulate_global_fp(tasks, m, horizon, "LO", Tac) and \
-           simulate_global_fp(tasks, m, horizon, "HI", Tac)
